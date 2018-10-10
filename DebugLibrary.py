@@ -26,7 +26,7 @@ from pygments.token import Token
 
 from robot import run_cli
 from robot.api import logger
-from robot.errors import ExecutionFailed, HandlerExecutionFailed
+from robot.errors import ExecutionFailed, HandlerExecutionFailed, ExecutionPassed, ExecutionFailures
 from robot.libdocpkg.model import LibraryDoc
 from robot.libdocpkg.robotbuilder import KeywordDocBuilder, LibraryDocBuilder
 from robot.libraries import STDLIBS
@@ -34,6 +34,7 @@ from robot.libraries.BuiltIn import BuiltIn
 from robot.running.namespace import IMPORTER
 from robot.running.signalhandler import STOP_SIGNAL_MONITOR
 from robot.variables import is_var
+import gc
 
 __version__ = '1.1.4'
 
@@ -80,7 +81,6 @@ class BaseCmd(cmd.Cmd, object):
 
     def do_exit(self, arg):
         """Exit the interpreter. You can also use the Ctrl-D shortcut."""
-
         return True
 
     do_EOF = do_exit
@@ -96,6 +96,33 @@ class BaseCmd(cmd.Cmd, object):
         import pdb
         pdb.set_trace()
 
+    def _get_step_runner(self):
+        sr = None
+        for obj in gc.get_objects():
+            if isinstance(obj, StepRunner):
+                if sr is None:
+                    sr = obj
+                else:
+                    logger.console("Multiple StepRunners found!!!")
+        return sr
+
+    def do_next(self, arg):
+        sr = self._get_step_runner()
+        from robot.running.model import Keyword
+        new_kwd = Keyword(name='Debug')
+        sr.steps.insert(1, new_kwd)
+        return True
+
+
+    def do_look(self, arg):
+        sr = self._get_step_runner()
+        first = True
+        for i in sr.steps:
+            if first:
+                print(str(i) + ' <--------')
+                first = False
+            else:
+                print(i)
 
 def get_libs():
     """Get libraries robotframework imported"""
@@ -664,3 +691,30 @@ def shell():
 
 if __name__ == '__main__':
     shell()
+
+
+from robot.running.steprunner import StepRunner
+old_run_steps = StepRunner.run_steps
+
+
+def run_steps(self, steps):
+    errors = []
+    self.steps = steps
+    while len(self.steps) > 0:
+        step = self.steps.pop(0)
+        try:
+            self.run_step(step)
+        except ExecutionPassed as exception:
+            exception.set_earlier_failures(errors)
+            raise exception
+        except ExecutionFailed as exception:
+            errors.extend(exception.get_errors())
+            if not exception.can_continue(self._context.in_teardown,
+                                          self._templated,
+                                          self._context.dry_run):
+                break
+    if errors:
+        raise ExecutionFailures(errors)
+
+
+StepRunner.run_steps = run_steps
