@@ -34,7 +34,7 @@ from robot.libraries.BuiltIn import BuiltIn
 from robot.running.namespace import IMPORTER
 from robot.running.signalhandler import STOP_SIGNAL_MONITOR
 from robot.variables import is_var
-import gc
+import inspect
 
 __version__ = '1.1.4'
 
@@ -44,7 +44,6 @@ KEYWORD_SEP = re.compile('  +|\t')
 
 def get_command_line_encoding():
     """Get encoding from shell environment, default utf-8"""
-    encoding = ''
     try:
         encoding = sys.stdout.encoding
     except AttributeError:
@@ -96,33 +95,6 @@ class BaseCmd(cmd.Cmd, object):
         import pdb
         pdb.set_trace()
 
-    def _get_step_runner(self):
-        sr = None
-        for obj in gc.get_objects():
-            if isinstance(obj, StepRunner):
-                if sr is None:
-                    sr = obj
-                else:
-                    logger.console("Multiple StepRunners found!!!")
-        return sr
-
-    def do_next(self, arg):
-        sr = self._get_step_runner()
-        from robot.running.model import Keyword
-        new_kwd = Keyword(name='Debug')
-        sr.steps.insert(1, new_kwd)
-        return True
-
-
-    def do_look(self, arg):
-        sr = self._get_step_runner()
-        first = True
-        for i in sr.steps:
-            if first:
-                print(str(i) + ' <--------')
-                first = False
-            else:
-                print(i)
 
 def get_libs():
     """Get libraries robotframework imported"""
@@ -378,6 +350,7 @@ Type "help" for more information.\
             self.intro = intro
         if self.intro:
             self.stdout.write(str(self.intro) + '\n')
+            self.do_look(None)
 
         stop = None
         while not stop:
@@ -421,9 +394,10 @@ class DebugCmd(PtkCmd):
     get_prompt_tokens = get_prompt_tokens
     prompt_style = style_from_dict({Token.Prompt: '#0000FF'})
 
-    def __init__(self, completekey='tab', stdin=None, stdout=None):
+    def __init__(self, completekey='tab', stdin=None, stdout=None, step_runner=None):
         PtkCmd.__init__(self, completekey, stdin, stdout)
         self.rf_bi = BuiltIn()
+        self.rf_step_runner = step_runner
 
     def postcmd(self, stop, line):
         """Run after a command"""
@@ -437,6 +411,54 @@ class DebugCmd(PtkCmd):
 
     def pre_loop(self):
         self.reset_robotframework_exception()
+
+    def do_next(self, arg):
+        from robot.running.model import Keyword
+        new_kwd = Keyword(name='Debug')
+        self.rf_step_runner.steps.insert(1, new_kwd)
+        return True
+
+    def do_look(self, arg):
+        from robot.running.model import TestCase, TestSuite, UserKeyword, Keyword, ResourceFile
+        sr = self.rf_step_runner
+        srs = set()
+        srs.add(sr)
+        first = sr.steps[0]
+        parent = first.parent
+        call_stack = [first]
+        test_case = ''
+        source = ''
+        suite = ''
+        while parent is not None:
+            if isinstance(parent, TestCase):
+                test_case = str(parent)
+                parent = parent.parent
+            elif isinstance(parent, TestSuite):
+                source = parent.source
+                suite = str(parent)
+                break
+            elif isinstance(parent, UserKeyword):
+                call_stack.append(parent)
+                next_sr = DebugLibrary._get_nth_closest_step_runner(len(srs))
+                srs.add(next_sr)
+                parent = next_sr.cur_step
+            elif isinstance(parent, Keyword):
+                call_stack.append(parent)
+                parent = parent.parent
+            else:
+                raise Exception(str(type(parent)))
+
+        print(source)
+        print(suite)
+        print(test_case)
+        for i in reversed(call_stack):
+            print(str(i))
+        og_steps = sr.og_steps
+        for step in og_steps:
+            if step == first:
+                print('-> ' + str(step))
+            else:
+                print('   ' + str(step))
 
     def do_help(self, arg):
         """Show help message."""
@@ -599,18 +621,50 @@ class DebugLibrary(object):
     ROBOT_LIBRARY_SCOPE = 'GLOBAL'
     ROBOT_LIBRARY_VERSION = __version__
 
+    def __init__(self, experimental=False):
+        if experimental:
+            StepRunner.run_steps = run_steps
+        self.step_runner = None
+
+    @staticmethod
+    def _get_closest_step_runner():
+        f = inspect.currentframe().f_back
+        while f is not None:
+            loc = f.f_locals
+            for v in loc.values():
+                if isinstance(v, StepRunner):
+                    return v
+            f = f.f_back
+        raise Exception("No StepRunner found, this should never happen.")
+
+    # 0-indexed
+    @staticmethod
+    def _get_nth_closest_step_runner(n):
+        srs = set()
+        f = inspect.currentframe().f_back
+        while f is not None:
+            loc = f.f_locals
+            for v in loc.values():
+                if isinstance(v, StepRunner):
+                    if len(srs) == n and v not in srs:
+                        return v
+                    elif v not in srs:
+                        srs.add(v)
+                    elif v in srs:
+                        pass
+            f = f.f_back
+        raise Exception("No StepRunner found, this should never happen.")
+
     def debug(self):
         """Open a interactive shell, run any RobotFramework keywords.
-
         Keywords seperated by two space or one tab, and Ctrl-D to exit.
         """
-
         # re-wire stdout so that we can use the cmd module and have readline
         # support
         old_stdout = sys.stdout
         sys.stdout = sys.__stdout__
         print_output('\n>>>>>', 'Enter interactive shell')
-        debug_cmd = DebugCmd()
+        debug_cmd = DebugCmd(step_runner=self._get_closest_step_runner())
         debug_cmd.cmdloop()
         print_output('\n>>>>>', 'Exit shell.')
         # put stdout back where it was
@@ -694,16 +748,18 @@ if __name__ == '__main__':
 
 
 from robot.running.steprunner import StepRunner
-old_run_steps = StepRunner.run_steps
 
 
 def run_steps(self, steps):
     errors = []
-    self.steps = steps
+    self.steps = []
+    self.og_steps = steps
+    for step in steps:
+        self.steps.append(step)
     while len(self.steps) > 0:
-        step = self.steps.pop(0)
+        self.cur_step = self.steps.pop(0)
         try:
-            self.run_step(step)
+            self.run_step(self.cur_step)
         except ExecutionPassed as exception:
             exception.set_earlier_failures(errors)
             raise exception
@@ -716,5 +772,3 @@ def run_steps(self, steps):
     if errors:
         raise ExecutionFailures(errors)
 
-
-StepRunner.run_steps = run_steps
