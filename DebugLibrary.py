@@ -419,6 +419,13 @@ class DebugCmd(PtkCmd):
         self.rf_step_runner.steps.insert(1, new_kwd)
         return True
 
+    # STUB
+    def do_step(self, arg):
+        from robot.running.model import Keyword
+        new_kwd = Keyword(name='Debug')
+        # TODO: insert this keyword into the subsequent step, instead of after it.
+        return True
+
     def do_look(self, arg):
         stack = self.debug_inst.keyword_stack
         import pdb
