@@ -351,7 +351,7 @@ Type "help" for more information.\
             self.intro = intro
         if self.intro:
             self.stdout.write(str(self.intro) + '\n')
-            self.do_look(None)
+            #self.do_look(None)
 
         stop = None
         while not stop:
@@ -416,20 +416,26 @@ class DebugCmd(PtkCmd):
     def do_next(self, arg):
         from robot.running.model import Keyword
         new_kwd = Keyword(name='Debug')
-        self.rf_step_runner.steps.insert(1, new_kwd)
+        self.debug_inst.most_recent_step_runner.steps.insert(1, new_kwd)
         return True
 
     # STUB
     def do_step(self, arg):
+        current_steps = self.debug_inst.most_recent_step_runner.steps
+        next_step = current_steps[0]
         from robot.running.model import Keyword
         new_kwd = Keyword(name='Debug')
         # TODO: insert this keyword into the subsequent step, instead of after it.
-        return True
+        # new_kwd needs to be inserted into next_step.
+        import pdb
+        pdb.set_trace()
+        pass
+        #logger.console("Step is not implemented yet.")
 
     def do_look(self, arg):
         stack = self.debug_inst.keyword_stack
-        import pdb
-        pdb.set_trace()
+        # import pdb
+        # pdb.set_trace()
         libs = get_libs_as_dict()
         for name, attributes, context, step_runner in stack:
             namespace = context.namespace
