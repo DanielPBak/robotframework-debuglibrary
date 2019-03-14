@@ -36,6 +36,8 @@ from robot.running.context import EXECUTION_CONTEXTS
 from robot.running.signalhandler import STOP_SIGNAL_MONITOR
 from robot.variables import is_var
 import inspect
+import math
+from robot.running.model import TestCase, TestSuite, UserKeyword, Keyword, ResourceFile
 
 __version__ = '1.1.4'
 
@@ -424,95 +426,104 @@ class DebugCmd(PtkCmd):
         current_steps = self.debug_inst.most_recent_step_runner.steps
         next_step = current_steps[0]
         from robot.running.model import Keyword
-        new_kwd = Keyword(name='Debug')
+        #new_kwd = Keyword(name='Debug')
         # TODO: insert this keyword into the subsequent step, instead of after it.
         # new_kwd needs to be inserted into next_step.
-        import pdb
-        pdb.set_trace()
-        pass
+        self.debug_inst.debug_trigger = True
+        return True
         #logger.console("Step is not implemented yet.")
 
-    def do_look(self, arg):
+    def do_look(self, depth=math.inf):
+        depth = int(depth) if depth else math.inf
         stack = self.debug_inst.keyword_stack
         # import pdb
         # pdb.set_trace()
         libs = get_libs_as_dict()
-        for name, attributes, context, step_runner in stack:
+        print_stack = []
+        source_of_next = None
+        for idx, (name, attributes, context, step_runner) in enumerate(stack):
+            source = source_of_next
             namespace = context.namespace
             runner = namespace.get_runner(name)
             from robot.running.librarykeywordrunner import LibraryKeywordRunner
             from robot.running.userkeywordrunner import UserKeywordRunner
             if isinstance(runner, LibraryKeywordRunner):
-                source = runner.library.source
+                source_of_next = runner.library.source
             elif isinstance(runner, UserKeywordRunner):
                 user_keywords = namespace._kw_store.user_keywords
                 if name in user_keywords.handlers:
-                    source = user_keywords.source
+                    source_of_next = user_keywords.source
                 else:
                     potential_sources = []
                     resources = namespace._kw_store.resources.values()
                     for resource in resources:
-                        if name in resource.handlers:
+                        if name in [handler.longname for handler in resource.handlers]:
                             potential_sources.append(resource.source)
                     if len(potential_sources) > 1:
                         raise NotImplementedError("Have not implemented dealing with multiple resources.")
-                    source = potential_sources[0]
+                    source_of_next = potential_sources[0]
             else:
                 raise Exception("Runner passed that is not dealt with.")
-            print(name, "args: " + str(attributes['args']), source)
-            print('og')
-            for step in step_runner.og_steps:
+            # Top level
+            # for step in step_runner.og_steps:
+            #     print(step)
+
+            current_steps = step_runner.steps
+            parent_stack = []
+            parent_set = {step.parent for step in current_steps}
+            parent_set.discard(None)
+            if len(parent_set) > 1:
+                print('current_steps has multiple parents.')
+                for step in current_steps:
+                    print(step, step.parent)
+                raise Exception('current_steps has multiple parents.')
+            elif len(parent_set) == 0:
+                print(parent_set)
+                raise Exception('current_steps has no parents somehow')
+
+            parent = next(iter(parent_set))
+            while parent is not None:
+                if isinstance(parent, TestCase):
+                    parent_stack.append('Test Case: {}'.format(parent.name))
+                elif isinstance(parent, TestSuite):
+                    parent_stack.append('Test Suite: {}, source: {}'.format(parent.name, parent.source))
+                elif isinstance(parent, UserKeyword):
+                    parent_stack.append('Keyword: {}, source: {}'.format(parent.name, source))
+                else:
+                    print('uncaught parent type')
+                    print(parent)
+                    raise Exception('Uncaught parent type')
+                if hasattr(parent, 'parent'):
+                    parent = parent.parent
+                else:
+                    parent = None
+
+            highlighted_idx = len(step_runner.og_steps) - len(step_runner.steps)
+            if idx != len(stack)-1:
+                highlighted_idx -= 1
+
+            steps_stack = []
+
+            for idx, step in enumerate(step_runner.og_steps):
+                if idx == highlighted_idx:
+                    steps_stack.append('    {} <-----'.format(step))
+                else:
+                    steps_stack.append('    {}'.format(step))
+
+            print_stack.append((source, steps_stack, parent_stack))
+
+
+
+        print('----------')
+        if depth < len(print_stack):
+            print_stack = print_stack[-depth:]
+        while len(print_stack) > 0:
+            source, steps_stack, parent_stack = print_stack.pop(0)
+            while len(parent_stack) > 0:
+                string = parent_stack.pop()
+                print(string)
+            for step in steps_stack:
                 print(step)
-            print('now')
-            for step in step_runner.steps:
-                print(step)
-            print(len(step_runner.og_steps) - len(step_runner.steps))
-
-
-
-        # from robot.running.model import TestCase, TestSuite, UserKeyword, Keyword, ResourceFile
-        # srs = set()
-        # srs.add(sr)
-        # first = sr.steps[0]
-        # parent = first.parent
-        # call_stack = [first]
-        # test_case = ''
-        # source = ''
-        # suite = ''
-        # import pdb
-        # while parent is not None:
-        #     if isinstance(parent, TestCase):
-        #         test_case = str(parent)
-        #         parent = parent.parent
-        #     elif isinstance(parent, TestSuite):
-        #         source = parent.source
-        #         suite = str(parent)
-        #         parent = None
-        #     elif isinstance(parent, UserKeyword):
-        #         print('encountered ukwd: ', parent.name)
-        #         next_sr = DebugLibrary._get_nth_closest_step_runner(len(srs))
-        #         srs.add(next_sr)
-        #         parent = next_sr.cur_step
-        #         print('ukwd parent is: ', parent.name)
-        #     elif isinstance(parent, Keyword):
-        #         pdb.set_trace()
-        #         call_stack.append(parent)
-        #         parent = parent.parent
-        #     else:
-        #         raise Exception(str(type(parent)))
-        #
-        # print("Source: ", source)
-        # print("Suite: ", suite)
-        # print("Test case: ", test_case)
-        # print("Call stack:")
-        # for i in reversed(call_stack):
-        #     print(i.name)
-        # og_steps = sr.og_steps
-        # for step in og_steps:
-        #     if step == first:
-        #         print('-> ' + str(step))
-        #     else:
-        #         print('   ' + str(step))
 
     def do_help(self, arg):
         """Show help message."""
@@ -677,6 +688,7 @@ class DebugLibrary(object):
     ROBOT_LISTENER_API_VERSION = 2
     keyword_stack = []
     most_recent_step_runner = None
+    debug_trigger = False
 
     def __init__(self, experimental=False):
         logger.error('initializing debuglib')
@@ -684,6 +696,7 @@ class DebugLibrary(object):
             StepRunner.run_steps = run_steps
             self.ROBOT_LIBRARY_LISTENER = self
         self.step_runner = None
+        self.debug_trigger = False
 
     def start_test(self, name, results):
         if len(self.keyword_stack) != 0:
@@ -691,7 +704,6 @@ class DebugLibrary(object):
 
     def start_keyword(self, name, attributes):
         context = EXECUTION_CONTEXTS.current
-
         self.keyword_stack.append((name, attributes, context, self.most_recent_step_runner))
 
     def end_keyword(self, name, attributes):
@@ -736,6 +748,7 @@ class DebugLibrary(object):
         """
         # re-wire stdout so that we can use the cmd module and have readline
         # support
+        self.debug_trigger = False
         old_stdout = sys.stdout
         sys.stdout = sys.__stdout__
         print_output('\n>>>>>', 'Enter interactive shell')
@@ -826,10 +839,24 @@ from robot.running.steprunner import StepRunner
 
 
 def run_steps(self, steps):
-    DebugLibrary.most_recent_step_runner = self
+    from robot.api import logger
+    logger.error('run_steps')
+    logger.error(steps)
+    debugLibrary = BuiltIn().get_library_instance('DebugLibrary')
+
+    debugLibrary.most_recent_step_runner = self
+
     errors = []
     self.steps = []
     self.og_steps = steps
+    from robot.api import logger
+    logger.error('run steps before trigger check {}'.format(debugLibrary.debug_trigger))
+    if debugLibrary.debug_trigger:
+        logger.error('run steps debug trigger')
+        new_kwd = Keyword(name='Debug')
+        self.steps.append(new_kwd)
+        debugLibrary.debug_trigger = False
+
     for step in steps:
         self.steps.append(step)
     while len(self.steps) > 0:
